@@ -1,0 +1,8 @@
+[package]
+name = "disk-maint"
+version = "0.1.0"
+edition = "2024"
+description = "Explicit-confirmation disk maintenance companion for disk-agent"
+publish = false
+
+[dependencies]
