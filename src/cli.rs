@@ -26,7 +26,13 @@ impl ParseError {
 pub enum Command {
     Scan,
     Rust,
+    Git(GitCommand),
     Clean(CleanCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitCommand {
+    Status,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +77,9 @@ where
     let command = match positional.as_slice() {
         [command] if command == "scan" => Command::Scan,
         [command] if command == "rust" => Command::Rust,
+        [command, target] if command == "git" && target == "status" => {
+            Command::Git(GitCommand::Status)
+        }
         [command, target] if command == "clean" && target == "target" => {
             Command::Clean(CleanCommand::Target)
         }
@@ -91,6 +100,7 @@ pub fn help_text() -> String {
     "Usage:
   disk-maint [--root PATH] scan
   disk-maint [--root PATH] rust
+  disk-maint [--root PATH] git status
   disk-maint [--root PATH] clean target
 
 Options:
@@ -103,12 +113,19 @@ Options:
 
 #[cfg(test)]
 mod tests {
-    use super::{CleanCommand, Command, parse_args};
+    use super::{CleanCommand, Command, GitCommand, parse_args};
 
     #[test]
     fn parses_clean_target() {
         let cli = parse_args(["disk-maint", "--root", "/tmp/repos", "clean", "target"]).unwrap();
         assert_eq!(cli.command, Command::Clean(CleanCommand::Target));
+        assert_eq!(cli.root.to_string_lossy(), "/tmp/repos");
+    }
+
+    #[test]
+    fn parses_git_status() {
+        let cli = parse_args(["disk-maint", "--root=/tmp/repos", "git", "status"]).unwrap();
+        assert_eq!(cli.command, Command::Git(GitCommand::Status));
         assert_eq!(cli.root.to_string_lossy(), "/tmp/repos");
     }
 

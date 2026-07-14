@@ -26,6 +26,7 @@ cargo install --path . --locked
 ```sh
 disk-maint scan
 disk-maint rust
+disk-maint git status
 disk-maint clean target
 ```
 
@@ -33,6 +34,7 @@ Use `--root` to scan a different repository root:
 
 ```sh
 disk-maint --root ~/labs/repos rust
+disk-maint --root ~/labs/repos git status
 disk-maint --root /tmp/repos clean target
 ```
 
@@ -54,13 +56,14 @@ initial version.
 ## `disk-maint rust`
 
 Recursively scans the configured root for Rust projects by locating
-`Cargo.toml`.
+`Cargo.toml`. Cargo workspaces are reported as one logical project by default.
 
 For each project, it reports:
 
 - project name
 - `target/` size
-- source tree size, excluding `target/`
+- source size from typical Rust source paths (`src/`, `tests/`, `benches/`,
+  `examples/`, `build.rs`, `Cargo.toml`, and `Cargo.lock`)
 
 Example:
 
@@ -75,6 +78,28 @@ codex-session-tools
 
 Total reclaimable build artifacts:
 1.1G
+```
+
+## `disk-maint git status`
+
+Recursively scans the configured root for Git repositories by locating `.git`
+directories. Clean repositories are omitted.
+
+Example:
+
+```text
+== disk-maint ==
+ M README.md
+ M src/rust/mod.rs
+
+== mobile-fix-demo ==
+?? Cargo.toml
+```
+
+If every repository is clean, it prints:
+
+```text
+All repositories are clean.
 ```
 
 ## `disk-maint clean target`
@@ -97,6 +122,7 @@ Implemented:
 
 - Rust project discovery
 - Rust build artifact reporting
+- Git working tree status reporting
 - Confirmed cleanup of Rust `target/` directories
 
 Not implemented yet:
@@ -114,6 +140,7 @@ src/
   main.rs
   cli.rs
   scan/
+  git/
   rust/
   clean/
 ```

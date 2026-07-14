@@ -9,6 +9,7 @@ pub struct RustProject {
     pub path: PathBuf,
     pub source_bytes: u64,
     pub target_bytes: u64,
+    pub workspace_members: usize,
 }
 
 impl RustProject {
@@ -29,8 +30,13 @@ pub fn render_projects(projects: &[RustProject]) -> String {
 
     let mut output = String::new();
     for project in projects {
-        output.push_str(&project.name);
-        output.push('\n');
+        if project.workspace_members > 0 {
+            output.push_str(&format!("{} (workspace)\n", project.name));
+            output.push_str(&format!("  members: {}\n", project.workspace_members));
+        } else {
+            output.push_str(&project.name);
+            output.push('\n');
+        }
         output.push_str(&format!(
             "  target/ {:>9}\n",
             format_bytes(project.target_bytes)
@@ -52,9 +58,20 @@ pub fn discover_projects(root: &Path) -> Result<Vec<RustProject>, String> {
     collect_manifests(root, &mut manifests)?;
     manifests.sort();
 
+    let mut workspace_roots = Vec::new();
+    for manifest in &manifests {
+        if is_workspace_manifest(manifest)? {
+            let root = manifest
+                .parent()
+                .ok_or_else(|| format!("manifest has no parent: {}", manifest.display()))?;
+            workspace_roots.push(root.to_path_buf());
+        }
+    }
+
     manifests
-        .into_iter()
-        .map(|manifest| project_from_manifest(&manifest))
+        .iter()
+        .filter(|manifest| should_report_manifest(manifest, &workspace_roots))
+        .map(|manifest| project_from_manifest(manifest, &manifests, &workspace_roots))
         .collect()
 }
 
@@ -62,7 +79,11 @@ pub fn path_size(path: &Path) -> Result<u64, String> {
     dir_size(path)
 }
 
-fn project_from_manifest(manifest: &Path) -> Result<RustProject, String> {
+fn project_from_manifest(
+    manifest: &Path,
+    manifests: &[PathBuf],
+    workspace_roots: &[PathBuf],
+) -> Result<RustProject, String> {
     let path = manifest
         .parent()
         .ok_or_else(|| format!("manifest has no parent: {}", manifest.display()))?
@@ -74,13 +95,52 @@ fn project_from_manifest(manifest: &Path) -> Result<RustProject, String> {
             .to_string()
     });
     let target = path.join("target");
+    let is_workspace = workspace_roots.iter().any(|root| root == &path);
+    let member_manifests = if is_workspace {
+        workspace_member_manifests(&path, manifests, workspace_roots)
+    } else {
+        Vec::new()
+    };
 
     Ok(RustProject {
         name,
-        source_bytes: dir_size_excluding(&path, &["target"])?,
+        source_bytes: source_size(&path, &member_manifests)?,
         target_bytes: dir_size(&target)?,
+        workspace_members: member_manifests.len(),
         path,
     })
+}
+
+fn should_report_manifest(manifest: &Path, workspace_roots: &[PathBuf]) -> bool {
+    let Some(path) = manifest.parent() else {
+        return false;
+    };
+
+    workspace_roots.iter().any(|root| root == path)
+        || !workspace_roots
+            .iter()
+            .any(|root| path != root && path.starts_with(root))
+}
+
+fn workspace_member_manifests(
+    workspace_root: &Path,
+    manifests: &[PathBuf],
+    workspace_roots: &[PathBuf],
+) -> Vec<PathBuf> {
+    manifests
+        .iter()
+        .filter(|manifest| {
+            let Some(path) = manifest.parent() else {
+                return false;
+            };
+            path != workspace_root
+                && path.starts_with(workspace_root)
+                && !workspace_roots
+                    .iter()
+                    .any(|root| root != workspace_root && path.starts_with(root))
+        })
+        .cloned()
+        .collect()
 }
 
 fn collect_manifests(dir: &Path, manifests: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -113,8 +173,45 @@ fn dir_size(path: &Path) -> Result<u64, String> {
     dir_size_with_filter(path, &|_| true)
 }
 
-fn dir_size_excluding(path: &Path, excluded: &[&str]) -> Result<u64, String> {
-    dir_size_with_filter(path, &|name| !excluded.contains(&name))
+fn source_size(project_path: &Path, member_manifests: &[PathBuf]) -> Result<u64, String> {
+    let mut total = source_size_for_manifest_dir(project_path)?;
+
+    for manifest in member_manifests {
+        let Some(member_path) = manifest.parent() else {
+            continue;
+        };
+        total += source_size_for_manifest_dir(member_path)?;
+    }
+
+    Ok(total)
+}
+
+fn source_size_for_manifest_dir(path: &Path) -> Result<u64, String> {
+    let mut total = 0;
+
+    for file in ["Cargo.toml", "Cargo.lock", "build.rs"] {
+        total += file_size(&path.join(file))?;
+    }
+
+    for dir in ["src", "tests", "benches", "examples"] {
+        total += dir_size(&path.join(dir))?;
+    }
+
+    Ok(total)
+}
+
+fn file_size(path: &Path) -> Result<u64, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("failed to inspect {}: {error}", path.display())),
+    };
+
+    if metadata.is_file() {
+        Ok(metadata.len())
+    } else {
+        Ok(0)
+    }
 }
 
 fn dir_size_with_filter(path: &Path, include_dir: &dyn Fn(&str) -> bool) -> Result<u64, String> {
@@ -181,6 +278,13 @@ fn package_name(manifest: &Path) -> Result<Option<String>, String> {
     Ok(None)
 }
 
+fn is_workspace_manifest(manifest: &Path) -> Result<bool, String> {
+    let contents = fs::read_to_string(manifest)
+        .map_err(|error| format!("failed to read {}: {error}", manifest.display()))?;
+
+    Ok(contents.lines().any(|line| line.trim() == "[workspace]"))
+}
+
 fn is_excluded_dir(name: &str) -> bool {
     matches!(
         name,
@@ -224,10 +328,79 @@ mod tests {
         assert_eq!(projects[0].name, "example");
         assert_eq!(projects[0].source_bytes, 40);
         assert_eq!(projects[0].target_bytes, 8);
+        assert_eq!(projects[0].workspace_members, 0);
 
         let report = render_projects(&projects);
         assert!(report.contains("example"));
         assert!(report.contains("Total reclaimable build artifacts"));
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn source_size_ignores_data_and_results() {
+        let temp = test_dir("disk-maint-rust-source-size");
+        let project = temp.join("example");
+        fs::create_dir_all(project.join("src")).unwrap();
+        fs::create_dir_all(project.join("data")).unwrap();
+        fs::create_dir_all(project.join("results")).unwrap();
+        fs::create_dir_all(project.join("target/debug")).unwrap();
+        fs::write(
+            project.join("Cargo.toml"),
+            "[package]\nname = \"example\"\n",
+        )
+        .unwrap();
+        fs::write(project.join("src/main.rs"), "fn main() {}\n").unwrap();
+        fs::write(project.join("data/input.bin"), "downloaded dataset").unwrap();
+        fs::write(project.join("results/output.bin"), "generated result").unwrap();
+        fs::write(project.join("target/debug/app"), "artifact").unwrap();
+
+        let projects = discover_projects(&temp).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].source_bytes, 40);
+
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn reports_cargo_workspace_as_single_project() {
+        let temp = test_dir("disk-maint-rust-workspace");
+        let workspace = temp.join("workspace");
+        let crate_a = workspace.join("crates/a");
+        let crate_b = workspace.join("crates/b");
+        fs::create_dir_all(crate_a.join("src")).unwrap();
+        fs::create_dir_all(crate_b.join("src")).unwrap();
+        fs::create_dir_all(workspace.join("target/debug")).unwrap();
+        fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            crate_a.join("Cargo.toml"),
+            "[package]\nname = \"crate-a\"\n",
+        )
+        .unwrap();
+        fs::write(crate_a.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+        fs::write(
+            crate_b.join("Cargo.toml"),
+            "[package]\nname = \"crate-b\"\n",
+        )
+        .unwrap();
+        fs::write(crate_b.join("src/lib.rs"), "pub fn b() {}\n").unwrap();
+        fs::write(workspace.join("target/debug/app"), "artifact").unwrap();
+
+        let projects = discover_projects(&temp).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name, "workspace");
+        assert_eq!(projects[0].workspace_members, 2);
+        assert_eq!(projects[0].target_bytes, 8);
+
+        let report = render_projects(&projects);
+        assert!(report.contains("workspace (workspace)"));
+        assert!(report.contains("  members: 2"));
+        assert!(!report.contains("crate-a\n"));
+        assert!(!report.contains("crate-b\n"));
 
         fs::remove_dir_all(temp).unwrap();
     }

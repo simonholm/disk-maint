@@ -1,5 +1,6 @@
 pub mod clean;
 pub mod cli;
+pub mod git;
 pub mod rust;
 pub mod scan;
 

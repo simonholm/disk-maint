@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use disk_maint::clean;
-use disk_maint::cli::{self, CleanCommand, Command};
+use disk_maint::cli::{self, CleanCommand, Command, GitCommand};
 
 fn main() -> ExitCode {
     let cli = match cli::parse_args(std::env::args()) {
@@ -35,6 +35,7 @@ fn run(cli: cli::Cli) -> Result<String, String> {
     match cli.command {
         Command::Scan => disk_maint::scan::report(&cli.root),
         Command::Rust => disk_maint::rust::report(&cli.root),
+        Command::Git(GitCommand::Status) => disk_maint::git::report_status(&cli.root),
         Command::Clean(CleanCommand::Target) => run_clean_target(&cli.root),
     }
 }
