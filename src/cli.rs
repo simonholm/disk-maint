@@ -37,7 +37,13 @@ pub enum GitCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CleanCommand {
-    Target,
+    Target(CleanTargetOptions),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CleanTargetOptions {
+    pub dry_run: bool,
+    pub yes: bool,
 }
 
 pub fn parse_args<I, S>(args: I) -> Result<Cli, ParseError>
@@ -49,11 +55,14 @@ where
     let _program = args.next();
 
     let mut root = default_repo_root();
+    let mut clean_target_options = CleanTargetOptions::default();
     let mut positional = Vec::new();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Err(ParseError::Help(help_text())),
+            "--dry-run" => clean_target_options.dry_run = true,
+            "--yes" => clean_target_options.yes = true,
             "-r" | "--root" => {
                 let Some(value) = args.next() else {
                     return Err(ParseError::Error("missing value for --root".to_string()));
@@ -81,7 +90,12 @@ where
             Command::Git(GitCommand::Status)
         }
         [command, target] if command == "clean" && target == "target" => {
-            Command::Clean(CleanCommand::Target)
+            if clean_target_options.dry_run && clean_target_options.yes {
+                return Err(ParseError::Error(
+                    "--dry-run cannot be used with --yes".to_string(),
+                ));
+            }
+            Command::Clean(CleanCommand::Target(clean_target_options))
         }
         [] => return Err(ParseError::Help(help_text())),
         _ => {
@@ -93,6 +107,14 @@ where
         }
     };
 
+    if !matches!(command, Command::Clean(CleanCommand::Target(_)))
+        && clean_target_options != CleanTargetOptions::default()
+    {
+        return Err(ParseError::Error(
+            "--dry-run and --yes are only valid with `clean target`".to_string(),
+        ));
+    }
+
     Ok(Cli { root, command })
 }
 
@@ -101,10 +123,12 @@ pub fn help_text() -> String {
   disk-maint [--root PATH] scan
   disk-maint [--root PATH] rust
   disk-maint [--root PATH] git status
-  disk-maint [--root PATH] clean target
+  disk-maint [--root PATH] clean target [--dry-run | --yes]
 
 Options:
   -r, --root PATH   Repository root to scan (default: ~/labs/repos)
+      --dry-run     Show the clean target plan without prompting or deleting
+      --yes         Delete planned target/ directories without prompting
   -h, --help        Show this help
 "
     .trim_end()
@@ -118,8 +142,35 @@ mod tests {
     #[test]
     fn parses_clean_target() {
         let cli = parse_args(["disk-maint", "--root", "/tmp/repos", "clean", "target"]).unwrap();
-        assert_eq!(cli.command, Command::Clean(CleanCommand::Target));
+        assert_eq!(
+            cli.command,
+            Command::Clean(CleanCommand::Target(Default::default()))
+        );
         assert_eq!(cli.root.to_string_lossy(), "/tmp/repos");
+    }
+
+    #[test]
+    fn parses_clean_target_dry_run() {
+        let cli = parse_args(["disk-maint", "clean", "target", "--dry-run"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Command::Clean(CleanCommand::Target(super::CleanTargetOptions {
+                dry_run: true,
+                yes: false,
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_clean_target_yes() {
+        let cli = parse_args(["disk-maint", "--yes", "clean", "target"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Command::Clean(CleanCommand::Target(super::CleanTargetOptions {
+                dry_run: false,
+                yes: true,
+            }))
+        );
     }
 
     #[test]
@@ -133,5 +184,26 @@ mod tests {
     fn rejects_unknown_commands() {
         let error = parse_args(["disk-maint", "clean", "registry"]).unwrap_err();
         assert!(error.message().contains("unknown command"));
+    }
+
+    #[test]
+    fn rejects_clean_target_dry_run_with_yes() {
+        let error =
+            parse_args(["disk-maint", "clean", "target", "--dry-run", "--yes"]).unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("--dry-run cannot be used with --yes")
+        );
+    }
+
+    #[test]
+    fn rejects_clean_target_options_on_other_commands() {
+        let error = parse_args(["disk-maint", "scan", "--dry-run"]).unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("--dry-run and --yes are only valid with `clean target`")
+        );
     }
 }

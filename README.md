@@ -28,6 +28,8 @@ disk-maint scan
 disk-maint rust
 disk-maint git status
 disk-maint clean target
+disk-maint clean target --dry-run
+disk-maint clean target --yes
 ```
 
 Use `--root` to scan a different repository root:
@@ -115,6 +117,20 @@ can rebuild. The trade-off is that the next build may take longer, and any files
 manually placed under `target/` will be lost.
 
 Confirmation requires typing `yes` exactly.
+
+Use `--dry-run` to print the cleanup plan without prompting or deleting
+anything:
+
+```sh
+disk-maint clean target --dry-run
+```
+
+Use `--yes` for automation when you want to delete the planned `target/`
+directories without an interactive prompt:
+
+```sh
+disk-maint clean target --yes
+```
 
 ## Current Scope
 
