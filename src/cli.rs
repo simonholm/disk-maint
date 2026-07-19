@@ -38,11 +38,17 @@ pub enum GitCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CleanCommand {
     Target(CleanTargetOptions),
+    Shared(CleanSharedOptions),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CleanTargetOptions {
     pub dry_run: bool,
+    pub yes: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CleanSharedOptions {
     pub yes: bool,
 }
 
@@ -97,6 +103,16 @@ where
             }
             Command::Clean(CleanCommand::Target(clean_target_options))
         }
+        [command, target] if command == "clean" && target == "shared" => {
+            if clean_target_options.dry_run {
+                return Err(ParseError::Error(
+                    "--dry-run is only valid with `clean target`".to_string(),
+                ));
+            }
+            Command::Clean(CleanCommand::Shared(CleanSharedOptions {
+                yes: clean_target_options.yes,
+            }))
+        }
         [] => return Err(ParseError::Help(help_text())),
         _ => {
             return Err(ParseError::Error(format!(
@@ -107,11 +123,13 @@ where
         }
     };
 
-    if !matches!(command, Command::Clean(CleanCommand::Target(_)))
-        && clean_target_options != CleanTargetOptions::default()
+    if !matches!(
+        command,
+        Command::Clean(CleanCommand::Target(_) | CleanCommand::Shared(_))
+    ) && clean_target_options != CleanTargetOptions::default()
     {
         return Err(ParseError::Error(
-            "--dry-run and --yes are only valid with `clean target`".to_string(),
+            "--dry-run is only valid with `clean target`; --yes is only valid with `clean target` or `clean shared`".to_string(),
         ));
     }
 
@@ -124,11 +142,12 @@ pub fn help_text() -> String {
   disk-maint [--root PATH] rust
   disk-maint [--root PATH] git status
   disk-maint [--root PATH] clean target [--dry-run | --yes]
+  disk-maint [--root PATH] clean shared [--yes]
 
 Options:
   -r, --root PATH   Repository root to scan (default: ~/labs/repos)
       --dry-run     Show the clean target plan without prompting or deleting
-      --yes         Delete planned target/ directories without prompting
+      --yes         Delete planned cleanup target without prompting
   -h, --help        Show this help
 "
     .trim_end()
@@ -174,6 +193,28 @@ mod tests {
     }
 
     #[test]
+    fn parses_clean_shared() {
+        let cli = parse_args(["disk-maint", "clean", "shared"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Command::Clean(CleanCommand::Shared(super::CleanSharedOptions {
+                yes: false
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_clean_shared_yes() {
+        let cli = parse_args(["disk-maint", "--yes", "clean", "shared"]).unwrap();
+        assert_eq!(
+            cli.command,
+            Command::Clean(CleanCommand::Shared(super::CleanSharedOptions {
+                yes: true
+            }))
+        );
+    }
+
+    #[test]
     fn parses_git_status() {
         let cli = parse_args(["disk-maint", "--root=/tmp/repos", "git", "status"]).unwrap();
         assert_eq!(cli.command, Command::Git(GitCommand::Status));
@@ -203,7 +244,17 @@ mod tests {
         assert!(
             error
                 .message()
-                .contains("--dry-run and --yes are only valid with `clean target`")
+                .contains("--dry-run is only valid with `clean target`")
+        );
+    }
+
+    #[test]
+    fn rejects_clean_shared_dry_run() {
+        let error = parse_args(["disk-maint", "clean", "shared", "--dry-run"]).unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("--dry-run is only valid with `clean target`")
         );
     }
 }

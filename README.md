@@ -30,6 +30,8 @@ disk-maint git status
 disk-maint clean target
 disk-maint clean target --dry-run
 disk-maint clean target --yes
+disk-maint clean shared
+disk-maint clean shared --yes
 ```
 
 Use `--root` to scan a different repository root:
@@ -38,6 +40,7 @@ Use `--root` to scan a different repository root:
 disk-maint --root ~/labs/repos rust
 disk-maint --root ~/labs/repos git status
 disk-maint --root /tmp/repos clean target
+disk-maint --root /tmp/repos clean shared
 ```
 
 The default root is `~/labs/repos`.
@@ -132,6 +135,34 @@ directories without an interactive prompt:
 disk-maint clean target --yes
 ```
 
+## `disk-maint clean shared`
+
+Finds Cargo's shared target directory by asking Cargo for metadata from Rust
+projects beneath the configured root, falling back to `CARGO_TARGET_DIR` when no
+metadata result identifies a shared target directory.
+
+This is different from `clean target`: project-local `target/` directories are
+owned by individual repositories, while the shared Cargo target directory is a
+single build cache reused across projects when Cargo is configured that way.
+
+The command shows the absolute shared target path, total size, and safety
+rationale before prompting for confirmation. The safety rationale is that the
+directory contains Cargo build artifacts that Cargo can rebuild. The trade-off
+is broader than `clean target`: all projects using the shared cache will rebuild
+afterwards.
+
+Confirmation requires typing `yes` exactly.
+
+Use `--yes` for automation when you want to delete the shared Cargo target
+directory without an interactive prompt:
+
+```sh
+disk-maint clean shared --yes
+```
+
+If no shared Cargo target directory is found, no prompt is shown and nothing is
+deleted.
+
 ## Current Scope
 
 Implemented:
@@ -140,6 +171,7 @@ Implemented:
 - Rust build artifact reporting
 - Git working tree status reporting
 - Confirmed cleanup of Rust `target/` directories
+- Confirmed cleanup of Cargo's shared target directory
 
 Not implemented yet:
 
@@ -164,5 +196,5 @@ src/
 ## Validation
 
 ```sh
-CARGO_TARGET_DIR=target cargo test
+CARGO_TARGET_DIR=/tmp/disk-maint-cargo-target cargo test
 ```

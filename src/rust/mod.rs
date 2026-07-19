@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::format_bytes;
 
@@ -12,6 +13,18 @@ pub struct RustProject {
     pub workspace_members: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CargoBuildArtifacts {
+    pub projects: Vec<RustProject>,
+    pub shared_target: Option<CargoTargetDir>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CargoTargetDir {
+    pub path: PathBuf,
+    pub bytes: u64,
+}
+
 impl RustProject {
     pub fn reclaimable_bytes(&self) -> u64 {
         self.target_bytes
@@ -21,6 +34,66 @@ impl RustProject {
 pub fn report(root: &Path) -> Result<String, String> {
     let projects = discover_projects(root)?;
     Ok(render_projects(&projects))
+}
+
+pub fn discover_build_artifacts(root: &Path) -> Result<CargoBuildArtifacts, String> {
+    let projects = discover_projects(root)?;
+    let shared_target = discover_shared_target_dir_from_projects(&projects)?
+        .map(|path| target_dir(&path))
+        .transpose()?
+        .flatten();
+
+    Ok(CargoBuildArtifacts {
+        projects,
+        shared_target,
+    })
+}
+
+pub fn discover_shared_target_dir(root: &Path) -> Result<Option<PathBuf>, String> {
+    let projects = discover_projects(root)?;
+    discover_shared_target_dir_from_projects(&projects)
+}
+
+fn discover_shared_target_dir_from_projects(
+    projects: &[RustProject],
+) -> Result<Option<PathBuf>, String> {
+    for project in projects {
+        let project_path = project
+            .path
+            .canonicalize()
+            .map_err(|error| format!("failed to resolve {}: {error}", project.path.display()))?;
+        let manifest = project_path.join("Cargo.toml");
+        let Some(target_dir) = cargo_metadata_target_dir(&manifest)? else {
+            continue;
+        };
+        if target_dir != project_path.join("target") {
+            return Ok(Some(target_dir));
+        }
+    }
+
+    configured_target_dir()
+}
+
+pub fn target_dir(path: &Path) -> Result<Option<CargoTargetDir>, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("failed to inspect {}: {error}", path.display())),
+    };
+
+    if !metadata.is_dir() {
+        return Err(format!(
+            "configured Cargo target path is not a directory: {}",
+            path.display()
+        ));
+    }
+
+    let path = path
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve {}: {error}", path.display()))?;
+    let bytes = path_size(&path)?;
+
+    Ok(Some(CargoTargetDir { path, bytes }))
 }
 
 pub fn render_projects(projects: &[RustProject]) -> String {
@@ -276,6 +349,81 @@ fn package_name(manifest: &Path) -> Result<Option<String>, String> {
     }
 
     Ok(None)
+}
+
+fn cargo_metadata_target_dir(manifest: &Path) -> Result<Option<PathBuf>, String> {
+    let output = Command::new("cargo")
+        .arg("metadata")
+        .arg("--format-version")
+        .arg("1")
+        .arg("--no-deps")
+        .arg("--manifest-path")
+        .arg(manifest)
+        .output()
+        .map_err(|error| {
+            format!(
+                "failed to run cargo metadata for {}: {error}",
+                manifest.display()
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "cargo metadata failed for {}: {}",
+            manifest.display(),
+            stderr.trim()
+        ));
+    }
+
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|error| format!("cargo metadata output was not UTF-8: {error}"))?;
+    Ok(extract_json_string(&stdout, "target_directory").map(PathBuf::from))
+}
+
+fn configured_target_dir() -> Result<Option<PathBuf>, String> {
+    let Some(value) = std::env::var_os("CARGO_TARGET_DIR") else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        Ok(Some(path))
+    } else {
+        std::env::current_dir()
+            .map(|cwd| Some(cwd.join(path)))
+            .map_err(|error| format!("failed to determine current directory: {error}"))
+    }
+}
+
+fn extract_json_string(input: &str, key: &str) -> Option<String> {
+    let marker = format!("\"{key}\"");
+    let start = input.find(&marker)? + marker.len();
+    let after_key = input[start..].trim_start();
+    let after_colon = after_key.strip_prefix(':')?.trim_start();
+    let raw = after_colon.strip_prefix('"')?;
+
+    let mut value = String::new();
+    let mut chars = raw.chars();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => return Some(value),
+            '\\' => match chars.next()? {
+                '"' => value.push('"'),
+                '\\' => value.push('\\'),
+                '/' => value.push('/'),
+                'b' => value.push('\u{0008}'),
+                'f' => value.push('\u{000c}'),
+                'n' => value.push('\n'),
+                'r' => value.push('\r'),
+                't' => value.push('\t'),
+                'u' => return None,
+                escaped => value.push(escaped),
+            },
+            ch => value.push(ch),
+        }
+    }
+
+    None
 }
 
 fn is_workspace_manifest(manifest: &Path) -> Result<bool, String> {

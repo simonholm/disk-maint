@@ -8,7 +8,7 @@ const DESCRIPTION_WIDTH: usize = 72;
 const DESCRIPTION_INDENT: &str = "    ";
 
 pub fn report(root: &Path) -> Result<String, String> {
-    let projects = crate::rust::discover_projects(root)?;
+    let build_artifacts = crate::rust::discover_build_artifacts(root)?;
     let cargo_registry = crate::home_dir()
         .map(|home| home.join(".cargo").join("registry"))
         .map(|path| size_or_zero(&path))
@@ -24,17 +24,11 @@ pub fn report(root: &Path) -> Result<String, String> {
         .map(|path| size_or_zero(&path))
         .transpose()?
         .unwrap_or(0);
-    let build_artifacts: u64 = projects.iter().map(|project| project.target_bytes).sum();
+    let project_count = build_artifacts.projects.len();
 
     let mut output = String::new();
     output.push_str("Rust maintenance report\n\n");
-    push_described_metric(
-        &mut output,
-        "Cargo build artifacts",
-        &format_bytes(build_artifacts),
-        "safe to remove per-project with",
-        &["cargo clean", "disk-maint clean target"],
-    );
+    push_cargo_build_artifacts(&mut output, &build_artifacts);
     push_described_metric(
         &mut output,
         "Cargo registry cache",
@@ -59,10 +53,45 @@ pub fn report(root: &Path) -> Result<String, String> {
     push_metric(
         &mut output,
         "Rust projects scanned",
-        &projects.len().to_string(),
+        &project_count.to_string(),
     );
     output.push_str("\nNo changes made.");
     Ok(output)
+}
+
+fn push_cargo_build_artifacts(output: &mut String, artifacts: &crate::rust::CargoBuildArtifacts) {
+    let project_local_bytes: u64 = artifacts
+        .projects
+        .iter()
+        .map(|project| project.target_bytes)
+        .sum();
+
+    output.push_str("Cargo build artifacts\n");
+    if project_local_bytes > 0 {
+        push_metric(
+            output,
+            "Project-local targets",
+            &format_bytes(project_local_bytes),
+        );
+        push_wrapped_description(output, "safe to remove with");
+        output.push_str(DESCRIPTION_INDENT);
+        output.push_str("`cargo clean`\n");
+        output.push_str(DESCRIPTION_INDENT);
+        output.push_str("`disk-maint clean target`\n");
+    }
+
+    if let Some(shared_target) = &artifacts.shared_target {
+        push_metric(output, "Shared target", &format_bytes(shared_target.bytes));
+        push_wrapped_description(output, "safe to remove with");
+        output.push_str(DESCRIPTION_INDENT);
+        output.push_str("`disk-maint clean shared`\n");
+    }
+
+    if project_local_bytes == 0 && artifacts.shared_target.is_none() {
+        push_wrapped_description(output, "none found");
+    }
+
+    output.push('\n');
 }
 
 fn push_described_metric(
@@ -117,24 +146,36 @@ fn size_or_zero(path: &Path) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{push_described_metric, push_metric, push_wrapped_description};
+    use std::path::PathBuf;
+
+    use crate::rust::{CargoBuildArtifacts, CargoTargetDir, RustProject};
+
+    use super::{push_cargo_build_artifacts, push_metric, push_wrapped_description};
 
     #[test]
     fn formats_scan_metrics_as_separated_blocks() {
         let mut output = String::new();
-        push_described_metric(
-            &mut output,
-            "Cargo build artifacts",
-            "1.2G",
-            "safe to remove per-project with",
-            &["cargo clean", "disk-maint clean target"],
-        );
+        push_cargo_build_artifacts(&mut output, &build_artifacts(1_234_567_890, Some(4096)));
         push_metric(&mut output, "Rust projects scanned", "12");
 
         assert_eq!(
             output,
-            "Cargo build artifacts       1.2G\n    safe to remove per-project with\n    `cargo clean`\n    `disk-maint clean target`\n\nRust projects scanned         12\n"
+            "Cargo build artifacts\nProject-local targets       1.1G\n    safe to remove with\n    `cargo clean`\n    `disk-maint clean target`\nShared target               4.0K\n    safe to remove with\n    `disk-maint clean shared`\n\nRust projects scanned         12\n"
         );
+    }
+
+    #[test]
+    fn omits_absent_cargo_build_artifact_categories() {
+        let mut output = String::new();
+        push_cargo_build_artifacts(&mut output, &build_artifacts(0, Some(4096)));
+        assert_eq!(
+            output,
+            "Cargo build artifacts\nShared target               4.0K\n    safe to remove with\n    `disk-maint clean shared`\n\n"
+        );
+
+        let mut output = String::new();
+        push_cargo_build_artifacts(&mut output, &build_artifacts(0, None));
+        assert_eq!(output, "Cargo build artifacts\n    none found\n\n");
     }
 
     #[test]
@@ -149,5 +190,28 @@ mod tests {
             output,
             "    this description is intentionally long enough to wrap without creating\n    an awkward hanging paragraph\n"
         );
+    }
+
+    fn build_artifacts(project_bytes: u64, shared_bytes: Option<u64>) -> CargoBuildArtifacts {
+        let projects = if project_bytes > 0 {
+            vec![RustProject {
+                name: "example".to_string(),
+                path: PathBuf::from("/tmp/example"),
+                source_bytes: 0,
+                target_bytes: project_bytes,
+                workspace_members: 0,
+            }]
+        } else {
+            Vec::new()
+        };
+        let shared_target = shared_bytes.map(|bytes| CargoTargetDir {
+            path: PathBuf::from("/tmp/shared-target"),
+            bytes,
+        });
+
+        CargoBuildArtifacts {
+            projects,
+            shared_target,
+        }
     }
 }
