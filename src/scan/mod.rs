@@ -65,14 +65,40 @@ fn push_cargo_build_artifacts(output: &mut String, artifacts: &crate::rust::Carg
         .iter()
         .map(|project| project.target_bytes)
         .sum();
+    let project_local_count = artifacts
+        .projects
+        .iter()
+        .filter(|project| project.target_bytes > 0)
+        .count();
+    let shared_target_bytes = artifacts
+        .shared_target
+        .as_ref()
+        .map(|target| target.bytes)
+        .unwrap_or(0);
 
-    output.push_str("Cargo build artifacts\n");
-    if project_local_bytes > 0 {
-        push_metric(
-            output,
-            "Project-local targets",
-            &format_bytes(project_local_bytes),
-        );
+    output.push_str("Cargo build artifacts\n\n");
+
+    push_metric(output, "Shared target", &format_bytes(shared_target_bytes));
+    if shared_target_bytes == 0 {
+        push_wrapped_description(output, "no shared build artifacts found");
+    } else {
+        push_wrapped_description(output, "shared build artifacts");
+        push_wrapped_description(output, "safe to remove with");
+        output.push_str(DESCRIPTION_INDENT);
+        output.push_str("`disk-maint clean shared`\n");
+    }
+
+    output.push('\n');
+
+    push_metric(
+        output,
+        "Local targets",
+        &format_local_targets_value(project_local_bytes, project_local_count),
+    );
+    if project_local_bytes == 0 {
+        push_wrapped_description(output, "no local build artifacts found");
+    } else {
+        push_wrapped_description(output, "repository/workspace build artifacts");
         push_wrapped_description(output, "safe to remove with");
         output.push_str(DESCRIPTION_INDENT);
         output.push_str("`cargo clean`\n");
@@ -80,18 +106,16 @@ fn push_cargo_build_artifacts(output: &mut String, artifacts: &crate::rust::Carg
         output.push_str("`disk-maint clean target`\n");
     }
 
-    if let Some(shared_target) = &artifacts.shared_target {
-        push_metric(output, "Shared target", &format_bytes(shared_target.bytes));
-        push_wrapped_description(output, "safe to remove with");
-        output.push_str(DESCRIPTION_INDENT);
-        output.push_str("`disk-maint clean shared`\n");
-    }
-
-    if project_local_bytes == 0 && artifacts.shared_target.is_none() {
-        push_wrapped_description(output, "none found");
-    }
-
     output.push('\n');
+}
+
+fn format_local_targets_value(bytes: u64, repositories: usize) -> String {
+    let noun = if repositories == 1 {
+        "repository"
+    } else {
+        "repositories"
+    };
+    format!("{} ({repositories} {noun})", format_bytes(bytes))
 }
 
 fn push_described_metric(
@@ -160,22 +184,38 @@ mod tests {
 
         assert_eq!(
             output,
-            "Cargo build artifacts\nProject-local targets       1.1G\n    safe to remove with\n    `cargo clean`\n    `disk-maint clean target`\nShared target               4.0K\n    safe to remove with\n    `disk-maint clean shared`\n\nRust projects scanned         12\n"
+            "Cargo build artifacts\n\nShared target               4.0K\n    shared build artifacts\n    safe to remove with\n    `disk-maint clean shared`\n\nLocal targets          1.1G (1 repository)\n    repository/workspace build artifacts\n    safe to remove with\n    `cargo clean`\n    `disk-maint clean target`\n\nRust projects scanned         12\n"
         );
     }
 
     #[test]
-    fn omits_absent_cargo_build_artifact_categories() {
+    fn formats_local_only_cargo_build_artifacts() {
         let mut output = String::new();
-        push_cargo_build_artifacts(&mut output, &build_artifacts(0, Some(4096)));
+        push_cargo_build_artifacts(&mut output, &build_artifacts(77_000_000, None));
         assert_eq!(
             output,
-            "Cargo build artifacts\nShared target               4.0K\n    safe to remove with\n    `disk-maint clean shared`\n\n"
+            "Cargo build artifacts\n\nShared target                 0B\n    no shared build artifacts found\n\nLocal targets          73M (1 repository)\n    repository/workspace build artifacts\n    safe to remove with\n    `cargo clean`\n    `disk-maint clean target`\n\n"
         );
+    }
 
+    #[test]
+    fn formats_shared_only_cargo_build_artifacts() {
+        let mut output = String::new();
+        push_cargo_build_artifacts(&mut output, &build_artifacts(0, Some(230_000_000)));
+        assert_eq!(
+            output,
+            "Cargo build artifacts\n\nShared target               219M\n    shared build artifacts\n    safe to remove with\n    `disk-maint clean shared`\n\nLocal targets          0B (0 repositories)\n    no local build artifacts found\n\n"
+        );
+    }
+
+    #[test]
+    fn formats_zero_cargo_build_artifacts() {
         let mut output = String::new();
         push_cargo_build_artifacts(&mut output, &build_artifacts(0, None));
-        assert_eq!(output, "Cargo build artifacts\n    none found\n\n");
+        assert_eq!(
+            output,
+            "Cargo build artifacts\n\nShared target                 0B\n    no shared build artifacts found\n\nLocal targets          0B (0 repositories)\n    no local build artifacts found\n\n"
+        );
     }
 
     #[test]
