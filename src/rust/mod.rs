@@ -25,6 +25,31 @@ pub struct CargoTargetDir {
     pub bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustupToolchains {
+    pub active: String,
+    pub default: String,
+    pub installed: Vec<String>,
+}
+
+impl RustupToolchains {
+    pub fn additional(&self) -> Vec<&str> {
+        self.installed
+            .iter()
+            .filter(|toolchain| *toolchain != &self.default)
+            .map(String::as_str)
+            .collect()
+    }
+
+    pub fn removable(&self) -> Vec<&str> {
+        self.installed
+            .iter()
+            .filter(|toolchain| *toolchain != &self.default && *toolchain != &self.active)
+            .map(String::as_str)
+            .collect()
+    }
+}
+
 impl RustProject {
     pub fn reclaimable_bytes(&self) -> u64 {
         self.target_bytes
@@ -150,6 +175,22 @@ pub fn discover_projects(root: &Path) -> Result<Vec<RustProject>, String> {
 
 pub fn path_size(path: &Path) -> Result<u64, String> {
     dir_size(path)
+}
+
+pub fn discover_rustup_toolchains() -> Result<Option<RustupToolchains>, String> {
+    let output = match Command::new("rustup").arg("toolchain").arg("list").output() {
+        Ok(output) => output,
+        Err(_) => return Ok(None),
+    };
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let Ok(stdout) = String::from_utf8(output.stdout) else {
+        return Ok(None);
+    };
+    Ok(parse_rustup_toolchains(&stdout))
 }
 
 fn project_from_manifest(
@@ -426,6 +467,51 @@ fn extract_json_string(input: &str, key: &str) -> Option<String> {
     None
 }
 
+fn parse_rustup_toolchains(input: &str) -> Option<RustupToolchains> {
+    let mut toolchains = Vec::new();
+    let mut active = None;
+    let mut default = None;
+
+    for line in input.lines() {
+        let Some(toolchain) = line.split_whitespace().next() else {
+            continue;
+        };
+        let toolchain = toolchain.to_string();
+        if has_rustup_annotation(line, "active") {
+            active = Some(toolchain.clone());
+        }
+        if has_rustup_annotation(line, "default") {
+            default = Some(toolchain.clone());
+        }
+        toolchains.push(toolchain);
+    }
+
+    if toolchains.is_empty() {
+        return None;
+    }
+
+    let default = default.unwrap_or_else(|| toolchains[0].clone());
+    let active = active.unwrap_or_else(|| default.clone());
+
+    Some(RustupToolchains {
+        active,
+        default,
+        installed: toolchains,
+    })
+}
+
+fn has_rustup_annotation(line: &str, annotation: &str) -> bool {
+    let Some((_, annotations)) = line.split_once('(') else {
+        return false;
+    };
+    annotations
+        .trim()
+        .trim_end_matches(')')
+        .trim()
+        .split(',')
+        .any(|part| part.trim() == annotation)
+}
+
 fn is_workspace_manifest(manifest: &Path) -> Result<bool, String> {
     let contents = fs::read_to_string(manifest)
         .map_err(|error| format!("failed to read {}: {error}", manifest.display()))?;
@@ -455,7 +541,7 @@ fn is_excluded_dir(name: &str) -> bool {
 mod tests {
     use std::fs;
 
-    use super::{discover_projects, render_projects};
+    use super::{discover_projects, parse_rustup_toolchains, render_projects};
 
     #[test]
     fn discovers_projects_and_separates_target_size() {
@@ -551,6 +637,104 @@ mod tests {
         assert!(!report.contains("crate-b\n"));
 
         fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn parses_one_rustup_toolchain() {
+        let toolchains =
+            parse_rustup_toolchains("stable-x86_64-unknown-linux-gnu (active, default)\n").unwrap();
+
+        assert_eq!(toolchains.active, "stable-x86_64-unknown-linux-gnu");
+        assert_eq!(toolchains.default, "stable-x86_64-unknown-linux-gnu");
+        assert_eq!(toolchains.installed, ["stable-x86_64-unknown-linux-gnu"]);
+    }
+
+    #[test]
+    fn parses_multiple_rustup_toolchains() {
+        let toolchains = parse_rustup_toolchains(
+            "stable-x86_64-unknown-linux-gnu (active, default)\nbeta-x86_64-unknown-linux-gnu\nnightly-x86_64-unknown-linux-gnu\n",
+        )
+        .unwrap();
+
+        assert_eq!(toolchains.active, "stable-x86_64-unknown-linux-gnu");
+        assert_eq!(toolchains.default, "stable-x86_64-unknown-linux-gnu");
+        assert_eq!(
+            toolchains.installed,
+            [
+                "stable-x86_64-unknown-linux-gnu",
+                "beta-x86_64-unknown-linux-gnu",
+                "nightly-x86_64-unknown-linux-gnu",
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_distinct_active_and_default_rustup_toolchains() {
+        let toolchains = parse_rustup_toolchains(
+            "stable-x86_64-unknown-linux-gnu (default)\nnightly-x86_64-unknown-linux-gnu (active)\nbeta-x86_64-unknown-linux-gnu\n",
+        )
+        .unwrap();
+
+        assert_eq!(toolchains.active, "nightly-x86_64-unknown-linux-gnu");
+        assert_eq!(toolchains.default, "stable-x86_64-unknown-linux-gnu");
+        assert_eq!(
+            toolchains.installed,
+            [
+                "stable-x86_64-unknown-linux-gnu",
+                "nightly-x86_64-unknown-linux-gnu",
+                "beta-x86_64-unknown-linux-gnu",
+            ]
+        );
+        assert_eq!(
+            toolchains.additional(),
+            [
+                "nightly-x86_64-unknown-linux-gnu",
+                "beta-x86_64-unknown-linux-gnu"
+            ]
+        );
+        assert_eq!(toolchains.removable(), ["beta-x86_64-unknown-linux-gnu"]);
+    }
+
+    #[test]
+    fn parses_pinned_and_custom_rustup_toolchains() {
+        let toolchains = parse_rustup_toolchains(
+            "1.89.0-x86_64-unknown-linux-gnu (active, default)\ncustom-dev\nbeta-x86_64-unknown-linux-gnu\n",
+        )
+        .unwrap();
+
+        assert_eq!(toolchains.active, "1.89.0-x86_64-unknown-linux-gnu");
+        assert_eq!(toolchains.default, "1.89.0-x86_64-unknown-linux-gnu");
+        assert_eq!(
+            toolchains.additional(),
+            ["custom-dev", "beta-x86_64-unknown-linux-gnu"]
+        );
+        assert_eq!(
+            toolchains.removable(),
+            ["custom-dev", "beta-x86_64-unknown-linux-gnu"]
+        );
+    }
+
+    #[test]
+    fn parses_rustup_toolchains_with_extra_whitespace_and_blank_lines() {
+        let toolchains = parse_rustup_toolchains(
+            "\n  stable-x86_64-unknown-linux-gnu   ( active , default )  \n\n  beta-x86_64-unknown-linux-gnu  \n",
+        )
+        .unwrap();
+
+        assert_eq!(toolchains.active, "stable-x86_64-unknown-linux-gnu");
+        assert_eq!(toolchains.default, "stable-x86_64-unknown-linux-gnu");
+        assert_eq!(
+            toolchains.installed,
+            [
+                "stable-x86_64-unknown-linux-gnu",
+                "beta-x86_64-unknown-linux-gnu",
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_empty_rustup_toolchain_output() {
+        assert_eq!(parse_rustup_toolchains("\n  \n"), None);
     }
 
     fn test_dir(name: &str) -> std::path::PathBuf {

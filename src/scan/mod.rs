@@ -24,6 +24,7 @@ pub fn report(root: &Path) -> Result<String, String> {
         .map(|path| size_or_zero(&path))
         .transpose()?
         .unwrap_or(0);
+    let rustup_toolchain_details = crate::rust::discover_rustup_toolchains()?;
     let project_count = build_artifacts.projects.len();
 
     let mut output = String::new();
@@ -43,12 +44,10 @@ pub fn report(root: &Path) -> Result<String, String> {
         "shared git dependency cache; removing may require re-fetching",
         &[],
     );
-    push_described_metric(
+    push_rustup_toolchains(
         &mut output,
-        "Rustup toolchains",
-        &format_bytes(rustup_toolchains),
-        "remove old toolchains with",
-        &["rustup toolchain uninstall <toolchain>"],
+        rustup_toolchains,
+        rustup_toolchain_details.as_ref(),
     );
     push_metric(
         &mut output,
@@ -118,6 +117,58 @@ fn format_local_targets_value(bytes: u64, repositories: usize) -> String {
     format!("{} ({repositories} {noun})", format_bytes(bytes))
 }
 
+fn push_rustup_toolchains(
+    output: &mut String,
+    bytes: u64,
+    toolchains: Option<&crate::rust::RustupToolchains>,
+) {
+    push_metric(output, "Rustup toolchains", &format_bytes(bytes));
+
+    let Some(toolchains) = toolchains else {
+        push_wrapped_description(output, "remove old toolchains with");
+        output.push_str(DESCRIPTION_INDENT);
+        output.push_str("`rustup toolchain uninstall <toolchain>`\n");
+        output.push('\n');
+        return;
+    };
+
+    if toolchains.installed.len() == 1 {
+        push_wrapped_description(
+            output,
+            &format!("1 toolchain installed ({})", toolchains.installed[0]),
+        );
+        push_wrapped_description(output, "nothing to remove");
+        output.push('\n');
+        return;
+    }
+
+    if toolchains.active == toolchains.default {
+        push_wrapped_description(output, &format!("active/default: {}", toolchains.default));
+    } else {
+        push_wrapped_description(output, &format!("active: {}", toolchains.active));
+        push_wrapped_description(output, &format!("default: {}", toolchains.default));
+    }
+
+    let additional = toolchains.additional();
+    if !additional.is_empty() {
+        push_wrapped_description(output, &format!("additional: {}", additional.join(", ")));
+    }
+
+    let removable = toolchains.removable();
+    if removable.is_empty() {
+        push_wrapped_description(output, "nothing to remove");
+    } else {
+        push_wrapped_description(output, "removable:");
+        for toolchain in removable {
+            output.push_str(DESCRIPTION_INDENT);
+            output.push_str("  rustup toolchain uninstall ");
+            output.push_str(toolchain);
+            output.push('\n');
+        }
+    }
+    output.push('\n');
+}
+
 fn push_described_metric(
     output: &mut String,
     label: &str,
@@ -172,9 +223,11 @@ fn size_or_zero(path: &Path) -> Result<u64, String> {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::rust::{CargoBuildArtifacts, CargoTargetDir, RustProject};
+    use crate::rust::{CargoBuildArtifacts, CargoTargetDir, RustProject, RustupToolchains};
 
-    use super::{push_cargo_build_artifacts, push_metric, push_wrapped_description};
+    use super::{
+        push_cargo_build_artifacts, push_metric, push_rustup_toolchains, push_wrapped_description,
+    };
 
     #[test]
     fn formats_scan_metrics_as_separated_blocks() {
@@ -229,6 +282,82 @@ mod tests {
         assert_eq!(
             output,
             "    this description is intentionally long enough to wrap without creating\n    an awkward hanging paragraph\n"
+        );
+    }
+
+    #[test]
+    fn formats_one_installed_rustup_toolchain() {
+        let mut output = String::new();
+        push_rustup_toolchains(
+            &mut output,
+            653_262_848,
+            Some(&RustupToolchains {
+                active: "stable".to_string(),
+                default: "stable".to_string(),
+                installed: vec!["stable".to_string()],
+            }),
+        );
+
+        assert_eq!(
+            output,
+            "Rustup toolchains           623M\n    1 toolchain installed (stable)\n    nothing to remove\n\n"
+        );
+    }
+
+    #[test]
+    fn formats_multiple_installed_rustup_toolchains() {
+        let mut output = String::new();
+        push_rustup_toolchains(
+            &mut output,
+            1_503_238_554,
+            Some(&RustupToolchains {
+                active: "stable".to_string(),
+                default: "stable".to_string(),
+                installed: vec![
+                    "stable".to_string(),
+                    "beta".to_string(),
+                    "nightly".to_string(),
+                ],
+            }),
+        );
+
+        assert_eq!(
+            output,
+            "Rustup toolchains           1.4G\n    active/default: stable\n    additional: beta, nightly\n    removable:\n      rustup toolchain uninstall beta\n      rustup toolchain uninstall nightly\n\n"
+        );
+    }
+
+    #[test]
+    fn formats_rustup_unavailable_with_existing_guidance() {
+        let mut output = String::new();
+        push_rustup_toolchains(&mut output, 0, None);
+
+        assert_eq!(
+            output,
+            "Rustup toolchains             0B\n    remove old toolchains with\n    `rustup toolchain uninstall <toolchain>`\n\n"
+        );
+    }
+
+    #[test]
+    fn formats_active_override_without_uninstalling_active_toolchain() {
+        let mut output = String::new();
+        push_rustup_toolchains(
+            &mut output,
+            1_503_238_554,
+            Some(&RustupToolchains {
+                active: "nightly".to_string(),
+                default: "stable".to_string(),
+                installed: vec![
+                    "stable".to_string(),
+                    "nightly".to_string(),
+                    "beta".to_string(),
+                ],
+            }),
+        );
+
+        assert_eq!(
+            output,
+            "Rustup toolchains           1.4G\n    active: nightly\n    default: stable\n    additional: nightly, beta\n    removable:\n      rustup toolchain uninstall beta\n\n"
         );
     }
 
