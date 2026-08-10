@@ -89,23 +89,21 @@ fn push_cargo_build_artifacts(output: &mut String, artifacts: &crate::rust::Carg
         output.push('\n');
     }
 
-    push_metric(
-        output,
-        "Local targets",
-        &format_local_targets_value(project_local_bytes, project_local_count),
-    );
-    if project_local_bytes == 0 {
-        push_wrapped_description(output, "no local build artifacts found");
-    } else {
+    if project_local_count > 0 {
+        push_metric(
+            output,
+            "Local targets",
+            &format_local_targets_value(project_local_bytes, project_local_count),
+        );
         push_wrapped_description(output, "repository/workspace build artifacts");
         push_wrapped_description(output, "safe to remove with");
         output.push_str(DESCRIPTION_INDENT);
         output.push_str("`cargo clean`\n");
         output.push_str(DESCRIPTION_INDENT);
         output.push_str("`disk-maint clean target`\n");
-    }
 
-    output.push('\n');
+        output.push('\n');
+    }
 }
 
 fn format_local_targets_value(bytes: u64, repositories: usize) -> String {
@@ -272,18 +270,15 @@ mod tests {
         push_cargo_build_artifacts(&mut output, &build_artifacts(0, Some(230_000_000)));
         assert_eq!(
             output,
-            "Cargo build artifacts\n\nShared target               219M\n    shared build artifacts\n    safe to remove with\n    `disk-maint clean shared`\n\nLocal targets          0B (0 repositories)\n    no local build artifacts found\n\n"
+            "Cargo build artifacts\n\nShared target               219M\n    shared build artifacts\n    safe to remove with\n    `disk-maint clean shared`\n\n"
         );
     }
 
     #[test]
-    fn formats_zero_cargo_build_artifacts() {
+    fn omits_zero_cargo_build_artifacts() {
         let mut output = String::new();
         push_cargo_build_artifacts(&mut output, &build_artifacts(0, None));
-        assert_eq!(
-            output,
-            "Cargo build artifacts\n\nLocal targets          0B (0 repositories)\n    no local build artifacts found\n\n"
-        );
+        assert_eq!(output, "Cargo build artifacts\n\n");
     }
 
     #[test]
