@@ -19,12 +19,14 @@ pub fn report(root: &Path) -> Result<String, String> {
         .map(|path| size_or_zero(&path))
         .transpose()?
         .unwrap_or(0);
-    let rustup_toolchains = crate::home_dir()
-        .map(|home| home.join(".rustup").join("toolchains"))
-        .map(|path| size_or_zero(&path))
-        .transpose()?
-        .unwrap_or(0);
+    let rustup_toolchains_dir =
+        crate::home_dir().map(|home| home.join(".rustup").join("toolchains"));
     let rustup_toolchain_details = crate::rust::discover_rustup_toolchains()?;
+    let rustup_toolchains = match (&rustup_toolchains_dir, rustup_toolchain_details.as_ref()) {
+        (Some(path), Some(toolchains)) => rustup_toolchain_reclaimable_bytes(path, toolchains)?,
+        (Some(path), None) => size_or_zero(path)?,
+        (None, _) => 0,
+    };
     let project_count = build_artifacts.projects.len();
 
     let mut output = String::new();
@@ -122,9 +124,8 @@ fn push_rustup_toolchains(
     bytes: u64,
     toolchains: Option<&crate::rust::RustupToolchains>,
 ) {
-    push_metric(output, "Rustup toolchains", &format_bytes(bytes));
-
     let Some(toolchains) = toolchains else {
+        push_metric(output, "Rustup toolchains", &format_bytes(bytes));
         push_wrapped_description(output, "remove old toolchains with");
         output.push_str(DESCRIPTION_INDENT);
         output.push_str("`rustup toolchain uninstall <toolchain>`\n");
@@ -132,15 +133,12 @@ fn push_rustup_toolchains(
         return;
     };
 
-    if toolchains.installed.len() == 1 {
-        push_wrapped_description(
-            output,
-            &format!("1 toolchain installed ({})", toolchains.installed[0]),
-        );
-        push_wrapped_description(output, "nothing to remove");
-        output.push('\n');
+    let removable = toolchains.removable();
+    if removable.is_empty() {
         return;
     }
+
+    push_metric(output, "Rustup toolchains", &format_bytes(bytes));
 
     if toolchains.active == toolchains.default {
         push_wrapped_description(output, &format!("active/default: {}", toolchains.default));
@@ -154,17 +152,12 @@ fn push_rustup_toolchains(
         push_wrapped_description(output, &format!("additional: {}", additional.join(", ")));
     }
 
-    let removable = toolchains.removable();
-    if removable.is_empty() {
-        push_wrapped_description(output, "nothing to remove");
-    } else {
-        push_wrapped_description(output, "removable:");
-        for toolchain in removable {
-            output.push_str(DESCRIPTION_INDENT);
-            output.push_str("  rustup toolchain uninstall ");
-            output.push_str(toolchain);
-            output.push('\n');
-        }
+    push_wrapped_description(output, "removable:");
+    for toolchain in removable {
+        output.push_str(DESCRIPTION_INDENT);
+        output.push_str("  rustup toolchain uninstall ");
+        output.push_str(toolchain);
+        output.push('\n');
     }
     output.push('\n');
 }
@@ -217,6 +210,17 @@ fn push_wrapped_description(output: &mut String, description: &str) {
 
 fn size_or_zero(path: &Path) -> Result<u64, String> {
     crate::rust::path_size(path)
+}
+
+fn rustup_toolchain_reclaimable_bytes(
+    toolchains_dir: &Path,
+    toolchains: &crate::rust::RustupToolchains,
+) -> Result<u64, String> {
+    toolchains
+        .removable()
+        .into_iter()
+        .map(|toolchain| size_or_zero(&toolchains_dir.join(toolchain)))
+        .sum()
 }
 
 #[cfg(test)]
@@ -286,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn formats_one_installed_rustup_toolchain() {
+    fn omits_one_installed_rustup_toolchain() {
         let mut output = String::new();
         push_rustup_toolchains(
             &mut output,
@@ -298,14 +302,11 @@ mod tests {
             }),
         );
 
-        assert_eq!(
-            output,
-            "Rustup toolchains           623M\n    1 toolchain installed (stable)\n    nothing to remove\n\n"
-        );
+        assert_eq!(output, "");
     }
 
     #[test]
-    fn formats_multiple_installed_rustup_toolchains() {
+    fn formats_actionable_rustup_toolchains() {
         let mut output = String::new();
         push_rustup_toolchains(
             &mut output,
@@ -325,6 +326,22 @@ mod tests {
             output,
             "Rustup toolchains           1.4G\n    active/default: stable\n    additional: beta, nightly\n    removable:\n      rustup toolchain uninstall beta\n      rustup toolchain uninstall nightly\n\n"
         );
+    }
+
+    #[test]
+    fn omits_rustup_toolchains_when_only_active_and_default_are_installed() {
+        let mut output = String::new();
+        push_rustup_toolchains(
+            &mut output,
+            1_503_238_554,
+            Some(&RustupToolchains {
+                active: "nightly".to_string(),
+                default: "stable".to_string(),
+                installed: vec!["stable".to_string(), "nightly".to_string()],
+            }),
+        );
+
+        assert_eq!(output, "");
     }
 
     #[test]
