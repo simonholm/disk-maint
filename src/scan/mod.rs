@@ -32,17 +32,17 @@ pub fn report(root: &Path) -> Result<String, String> {
     let mut output = String::new();
     output.push_str("Rust maintenance report\n\n");
     push_cargo_build_artifacts(&mut output, &build_artifacts);
-    push_described_metric(
+    push_described_metric_if_nonzero(
         &mut output,
         "Cargo registry cache",
-        &format_bytes(cargo_registry),
+        cargo_registry,
         "shared package cache; removing may require re-downloads",
         &[],
     );
-    push_described_metric(
+    push_described_metric_if_nonzero(
         &mut output,
         "Cargo git cache",
-        &format_bytes(cargo_git),
+        cargo_git,
         "shared git dependency cache; removing may require re-fetching",
         &[],
     );
@@ -79,17 +79,15 @@ fn push_cargo_build_artifacts(output: &mut String, artifacts: &crate::rust::Carg
 
     output.push_str("Cargo build artifacts\n\n");
 
-    push_metric(output, "Shared target", &format_bytes(shared_target_bytes));
-    if shared_target_bytes == 0 {
-        push_wrapped_description(output, "no shared build artifacts found");
-    } else {
+    if shared_target_bytes > 0 {
+        push_metric(output, "Shared target", &format_bytes(shared_target_bytes));
         push_wrapped_description(output, "shared build artifacts");
         push_wrapped_description(output, "safe to remove with");
         output.push_str(DESCRIPTION_INDENT);
         output.push_str("`disk-maint clean shared`\n");
-    }
 
-    output.push('\n');
+        output.push('\n');
+    }
 
     push_metric(
         output,
@@ -180,6 +178,18 @@ fn push_described_metric(
     output.push('\n');
 }
 
+fn push_described_metric_if_nonzero(
+    output: &mut String,
+    label: &str,
+    bytes: u64,
+    description: &str,
+    commands: &[&str],
+) {
+    if bytes > 0 {
+        push_described_metric(output, label, &format_bytes(bytes), description, commands);
+    }
+}
+
 fn push_metric(output: &mut String, label: &str, value: &str) {
     output.push_str(&format!("{label:<LABEL_WIDTH$} {value:>VALUE_WIDTH$}\n"));
 }
@@ -230,7 +240,8 @@ mod tests {
     use crate::rust::{CargoBuildArtifacts, CargoTargetDir, RustProject, RustupToolchains};
 
     use super::{
-        push_cargo_build_artifacts, push_metric, push_rustup_toolchains, push_wrapped_description,
+        push_cargo_build_artifacts, push_described_metric_if_nonzero, push_metric,
+        push_rustup_toolchains, push_wrapped_description,
     };
 
     #[test]
@@ -251,7 +262,7 @@ mod tests {
         push_cargo_build_artifacts(&mut output, &build_artifacts(77_000_000, None));
         assert_eq!(
             output,
-            "Cargo build artifacts\n\nShared target                 0B\n    no shared build artifacts found\n\nLocal targets          73M (1 repository)\n    repository/workspace build artifacts\n    safe to remove with\n    `cargo clean`\n    `disk-maint clean target`\n\n"
+            "Cargo build artifacts\n\nLocal targets          73M (1 repository)\n    repository/workspace build artifacts\n    safe to remove with\n    `cargo clean`\n    `disk-maint clean target`\n\n"
         );
     }
 
@@ -271,7 +282,38 @@ mod tests {
         push_cargo_build_artifacts(&mut output, &build_artifacts(0, None));
         assert_eq!(
             output,
-            "Cargo build artifacts\n\nShared target                 0B\n    no shared build artifacts found\n\nLocal targets          0B (0 repositories)\n    no local build artifacts found\n\n"
+            "Cargo build artifacts\n\nLocal targets          0B (0 repositories)\n    no local build artifacts found\n\n"
+        );
+    }
+
+    #[test]
+    fn omits_zero_size_cache_metrics() {
+        let mut output = String::new();
+        push_described_metric_if_nonzero(
+            &mut output,
+            "Cargo git cache",
+            0,
+            "shared git dependency cache; removing may require re-fetching",
+            &[],
+        );
+
+        assert_eq!(output, "");
+    }
+
+    #[test]
+    fn formats_nonzero_cache_metrics() {
+        let mut output = String::new();
+        push_described_metric_if_nonzero(
+            &mut output,
+            "Cargo registry cache",
+            123_456,
+            "shared package cache; removing may require re-downloads",
+            &[],
+        );
+
+        assert_eq!(
+            output,
+            "Cargo registry cache        121K\n    shared package cache; removing may require re-downloads\n\n"
         );
     }
 
