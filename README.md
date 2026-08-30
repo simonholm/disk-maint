@@ -50,7 +50,9 @@ The default root is `~/labs/repos`.
 Prints a high-level Rust maintenance report without modifying anything:
 
 - Cargo build artifacts under project `target/` directories
-- Cargo registry cache
+- Cargo registry `.crate` archive cache
+- Cargo registry unpacked source trees
+- Cargo registry index and metadata
 - Cargo git cache
 - Installed Rust toolchains
 - Rust project count

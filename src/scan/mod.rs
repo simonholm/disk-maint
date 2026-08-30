@@ -7,13 +7,20 @@ const VALUE_WIDTH: usize = 9;
 const DESCRIPTION_WIDTH: usize = 72;
 const DESCRIPTION_INDENT: &str = "    ";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CargoRegistryData {
+    cache_bytes: u64,
+    src_bytes: u64,
+    index_bytes: u64,
+}
+
 pub fn report(root: &Path) -> Result<String, String> {
     let build_artifacts = crate::rust::discover_build_artifacts(root)?;
     let cargo_registry = crate::home_dir()
         .map(|home| home.join(".cargo").join("registry"))
-        .map(|path| size_or_zero(&path))
+        .map(|path| cargo_registry_data(&path))
         .transpose()?
-        .unwrap_or(0);
+        .unwrap_or_else(empty_cargo_registry_data);
     let cargo_git = crate::home_dir()
         .map(|home| home.join(".cargo").join("git"))
         .map(|path| size_or_zero(&path))
@@ -32,13 +39,7 @@ pub fn report(root: &Path) -> Result<String, String> {
     let mut output = String::new();
     output.push_str("Rust maintenance report\n\n");
     push_cargo_build_artifacts(&mut output, &build_artifacts);
-    push_described_metric_if_nonzero(
-        &mut output,
-        "Cargo registry cache",
-        cargo_registry,
-        "shared package cache; removing may require re-downloads",
-        &[],
-    );
+    push_cargo_registry_data(&mut output, &cargo_registry);
     push_described_metric_if_nonzero(
         &mut output,
         "Cargo git cache",
@@ -58,6 +59,22 @@ pub fn report(root: &Path) -> Result<String, String> {
     );
     output.push_str("\nNo changes made.");
     Ok(output)
+}
+
+fn cargo_registry_data(path: &Path) -> Result<CargoRegistryData, String> {
+    Ok(CargoRegistryData {
+        cache_bytes: size_or_zero(&path.join("cache"))?,
+        src_bytes: size_or_zero(&path.join("src"))?,
+        index_bytes: size_or_zero(&path.join("index"))?,
+    })
+}
+
+fn empty_cargo_registry_data() -> CargoRegistryData {
+    CargoRegistryData {
+        cache_bytes: 0,
+        src_bytes: 0,
+        index_bytes: 0,
+    }
 }
 
 fn push_cargo_build_artifacts(output: &mut String, artifacts: &crate::rust::CargoBuildArtifacts) {
@@ -104,6 +121,30 @@ fn push_cargo_build_artifacts(output: &mut String, artifacts: &crate::rust::Carg
 
         output.push('\n');
     }
+}
+
+fn push_cargo_registry_data(output: &mut String, registry: &CargoRegistryData) {
+    push_described_metric_if_nonzero(
+        output,
+        "Cargo crate archives",
+        registry.cache_bytes,
+        "downloaded .crate archives used as Cargo's package cache",
+        &[],
+    );
+    push_described_metric_if_nonzero(
+        output,
+        "Cargo crate sources",
+        registry.src_bytes,
+        "unpacked crate source trees from downloaded registry packages",
+        &[],
+    );
+    push_described_metric_if_nonzero(
+        output,
+        "Cargo registry index",
+        registry.index_bytes,
+        "registry index and package metadata used for dependency resolution",
+        &[],
+    );
 }
 
 fn format_local_targets_value(bytes: u64, repositories: usize) -> String {
@@ -233,12 +274,14 @@ fn rustup_toolchain_reclaimable_bytes(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::PathBuf;
 
     use crate::rust::{CargoBuildArtifacts, CargoTargetDir, RustProject, RustupToolchains};
 
     use super::{
-        push_cargo_build_artifacts, push_described_metric_if_nonzero, push_metric,
+        CargoRegistryData, cargo_registry_data, push_cargo_build_artifacts,
+        push_cargo_registry_data, push_described_metric_if_nonzero, push_metric,
         push_rustup_toolchains, push_wrapped_description,
     };
 
@@ -300,16 +343,78 @@ mod tests {
         let mut output = String::new();
         push_described_metric_if_nonzero(
             &mut output,
-            "Cargo registry cache",
+            "Cargo git cache",
             123_456,
-            "shared package cache; removing may require re-downloads",
+            "shared git dependency cache; removing may require re-fetching",
             &[],
         );
 
         assert_eq!(
             output,
-            "Cargo registry cache        121K\n    shared package cache; removing may require re-downloads\n\n"
+            "Cargo git cache             121K\n    shared git dependency cache; removing may require re-fetching\n\n"
         );
+    }
+
+    #[test]
+    fn formats_cargo_registry_data_as_separate_rows() {
+        let mut output = String::new();
+        push_cargo_registry_data(
+            &mut output,
+            &CargoRegistryData {
+                cache_bytes: 255_852_544,
+                src_bytes: 1_610_612_736,
+                index_bytes: 83_886_080,
+            },
+        );
+
+        assert_eq!(
+            output,
+            "Cargo crate archives        244M\n    downloaded .crate archives used as Cargo's package cache\n\nCargo crate sources         1.5G\n    unpacked crate source trees from downloaded registry packages\n\nCargo registry index         80M\n    registry index and package metadata used for dependency resolution\n\n"
+        );
+    }
+
+    #[test]
+    fn omits_zero_cargo_registry_data_rows() {
+        let mut output = String::new();
+        push_cargo_registry_data(
+            &mut output,
+            &CargoRegistryData {
+                cache_bytes: 123_456,
+                src_bytes: 0,
+                index_bytes: 0,
+            },
+        );
+
+        assert_eq!(
+            output,
+            "Cargo crate archives        121K\n    downloaded .crate archives used as Cargo's package cache\n\n"
+        );
+    }
+
+    #[test]
+    fn cargo_registry_data_counts_standard_registry_subdirectories_only() {
+        let temp = test_dir("disk-maint-cargo-registry-data");
+        let registry = temp.join("registry");
+        fs::create_dir_all(registry.join("cache")).unwrap();
+        fs::create_dir_all(registry.join("src")).unwrap();
+        fs::create_dir_all(registry.join("index")).unwrap();
+        fs::create_dir_all(registry.join("other")).unwrap();
+        fs::write(registry.join("cache/crate.crate"), [0; 10]).unwrap();
+        fs::write(registry.join("src/lib.rs"), [0; 20]).unwrap();
+        fs::write(registry.join("index/config.json"), [0; 30]).unwrap();
+        fs::write(registry.join("other/ignored"), [0; 40]).unwrap();
+
+        let data = cargo_registry_data(&registry).unwrap();
+
+        assert_eq!(
+            data,
+            CargoRegistryData {
+                cache_bytes: 10,
+                src_bytes: 20,
+                index_bytes: 30,
+            }
+        );
+        fs::remove_dir_all(temp).unwrap();
     }
 
     #[test]
@@ -436,5 +541,12 @@ mod tests {
             projects,
             shared_target,
         }
+    }
+
+    fn test_dir(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        path
     }
 }
