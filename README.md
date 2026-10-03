@@ -32,6 +32,8 @@ disk-maint clean target --dry-run
 disk-maint clean target --yes
 disk-maint clean shared
 disk-maint clean shared --yes
+disk-maint clean tools
+disk-maint clean tools --yes
 ```
 
 Use `--root` to scan a different repository root:
@@ -47,7 +49,7 @@ The default root is `~/labs/repos`.
 
 ## `disk-maint scan`
 
-Prints a high-level Rust maintenance report without modifying anything:
+Prints a high-level Rust and tool-version maintenance report without modifying anything:
 
 - Cargo build artifacts under project `target/` directories
 - Cargo registry `.crate` archive cache
@@ -56,6 +58,7 @@ Prints a high-level Rust maintenance report without modifying anything:
 - Cargo git cache
 - Installed Rust toolchains
 - Rust project count
+- Stale Codex releases and Claude Code versions, with reclaimable sizes
 
 Registry, git cache, and toolchain entries are informational only in this
 initial version.
@@ -165,6 +168,29 @@ disk-maint clean shared --yes
 If no shared Cargo target directory is found, no prompt is shown and nothing is
 deleted.
 
+## `disk-maint clean tools`
+
+Shows reclaimable Codex releases and Claude Code binaries, then requires typing
+`yes` to remove them. `--yes` skips the prompt. Tool stores are under `HOME`;
+`--root` applies only to repository commands.
+
+Codex uses each component's `auto-update-version` marker under
+`~/.codex/packages/{standalone,app-server-daemon}`. The marked release must
+exist. Conflicting `current` pointers or a conflicting standalone
+`codex --version` check block cleanup of that component. Claude uses the real
+path of the executable found on `PATH`, which must resolve directly into
+`~/.local/share/claude/versions`.
+
+Missing or ambiguous active-version evidence is reported and that component is
+skipped. Only real version-named release directories or Claude version files
+are eligible; symlinks, updater metadata, locks, and unrelated entries remain.
+Active versions are checked again after confirmation and before each deletion.
+Each removal and the approximate total reclaimed size are reported.
+
+Removing old versions gives up the ability to roll back to those local copies.
+Run this explicit command when tool updates are idle; it does not schedule
+cleanup or coordinate with concurrently running updaters.
+
 ## Current Scope
 
 Implemented:
@@ -174,6 +200,7 @@ Implemented:
 - Git working tree status reporting
 - Confirmed cleanup of Rust `target/` directories
 - Confirmed cleanup of Cargo's shared target directory
+- Stale Codex and Claude Code version reporting and confirmed cleanup
 
 Not implemented yet:
 

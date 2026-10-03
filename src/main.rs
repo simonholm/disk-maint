@@ -40,6 +40,47 @@ fn run(cli: cli::Cli) -> Result<String, String> {
         Command::Git(GitCommand::Status) => disk_maint::git::report_status(&cli.root),
         Command::Clean(CleanCommand::Target(options)) => run_clean_target(&cli.root, options),
         Command::Clean(CleanCommand::Shared(options)) => run_clean_shared(&cli.root, options),
+        Command::Clean(CleanCommand::Tools(options)) => run_clean_tools(options),
+    }
+}
+
+fn run_clean_tools(options: CleanSharedOptions) -> Result<String, String> {
+    let plan = clean::tools::plan()?;
+    let mut summary = clean::tools::render(&plan);
+    for component in &plan.components {
+        for entry in &component.stale {
+            summary.push_str(&format!(
+                "\n  {} ({})",
+                entry.path.display(),
+                disk_maint::format_bytes(entry.bytes)
+            ));
+        }
+    }
+    if !clean::tools::has_stale(&plan) {
+        return Ok(summary);
+    }
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+    let mut output = io::stdout();
+    if !options.yes {
+        writeln!(output, "{summary}").map_err(|e| e.to_string())?;
+        write!(
+            output,
+            "Delete these stale tool versions? Type 'yes' to continue: "
+        )
+        .map_err(|e| e.to_string())?;
+        output.flush().map_err(|e| e.to_string())?;
+        let mut answer = String::new();
+        input.read_line(&mut answer).map_err(|e| e.to_string())?;
+        if answer.trim() != "yes" {
+            return Ok("Aborted. No files were deleted.".into());
+        }
+    }
+    let removed = clean::tools::execute(&plan)?;
+    if options.yes {
+        Ok(format!("{summary}\n{removed}"))
+    } else {
+        Ok(removed)
     }
 }
 

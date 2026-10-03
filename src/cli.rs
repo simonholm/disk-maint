@@ -39,6 +39,7 @@ pub enum GitCommand {
 pub enum CleanCommand {
     Target(CleanTargetOptions),
     Shared(CleanSharedOptions),
+    Tools(CleanSharedOptions),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -113,6 +114,16 @@ where
                 yes: clean_target_options.yes,
             }))
         }
+        [command, target] if command == "clean" && target == "tools" => {
+            if clean_target_options.dry_run {
+                return Err(ParseError::Error(
+                    "--dry-run is only valid with `clean target`".into(),
+                ));
+            }
+            Command::Clean(CleanCommand::Tools(CleanSharedOptions {
+                yes: clean_target_options.yes,
+            }))
+        }
         [] => return Err(ParseError::Help(help_text())),
         _ => {
             return Err(ParseError::Error(format!(
@@ -125,11 +136,11 @@ where
 
     if !matches!(
         command,
-        Command::Clean(CleanCommand::Target(_) | CleanCommand::Shared(_))
+        Command::Clean(CleanCommand::Target(_) | CleanCommand::Shared(_) | CleanCommand::Tools(_))
     ) && clean_target_options != CleanTargetOptions::default()
     {
         return Err(ParseError::Error(
-            "--dry-run is only valid with `clean target`; --yes is only valid with `clean target` or `clean shared`".to_string(),
+            "--dry-run is only valid with `clean target`; --yes is only valid with `clean target` or `clean shared` or `clean tools`".to_string(),
         ));
     }
 
@@ -143,6 +154,7 @@ pub fn help_text() -> String {
   disk-maint [--root PATH] git status
   disk-maint [--root PATH] clean target [--dry-run | --yes]
   disk-maint [--root PATH] clean shared [--yes]
+  disk-maint clean tools [--yes]
 
 Options:
   -r, --root PATH   Repository root to scan (default: ~/labs/repos)
@@ -212,6 +224,21 @@ mod tests {
                 yes: true
             }))
         );
+    }
+
+    #[test]
+    fn parses_clean_tools_and_yes() {
+        for yes in [false, true] {
+            let mut args = vec!["disk-maint", "clean", "tools"];
+            if yes {
+                args.push("--yes");
+            }
+            assert_eq!(
+                parse_args(args).unwrap().command,
+                Command::Clean(CleanCommand::Tools(super::CleanSharedOptions { yes }))
+            );
+        }
+        assert!(parse_args(["disk-maint", "clean", "tools", "--dry-run"]).is_err());
     }
 
     #[test]

@@ -57,6 +57,8 @@ pub fn report(root: &Path) -> Result<String, String> {
         "Rust projects scanned",
         &project_count.to_string(),
     );
+    output.push('\n');
+    output.push_str(&crate::clean::tools::render(&crate::clean::tools::plan()?));
     output.push_str("\nNo changes made.");
     Ok(output)
 }
