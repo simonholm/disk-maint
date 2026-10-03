@@ -11,13 +11,16 @@ pub struct Cli {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     Help(String),
+    Version(String),
     Error(String),
 }
 
 impl ParseError {
     pub fn message(&self) -> &str {
         match self {
-            ParseError::Help(message) | ParseError::Error(message) => message,
+            ParseError::Help(message)
+            | ParseError::Version(message)
+            | ParseError::Error(message) => message,
         }
     }
 }
@@ -68,6 +71,13 @@ where
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => return Err(ParseError::Help(help_text())),
+            "-V" | "--version" => {
+                return Err(ParseError::Version(format!(
+                    "{} {}",
+                    env!("CARGO_PKG_NAME"),
+                    env!("CARGO_PKG_VERSION")
+                )));
+            }
             "--dry-run" => clean_target_options.dry_run = true,
             "--yes" => clean_target_options.yes = true,
             "-r" | "--root" => {
@@ -161,6 +171,7 @@ Options:
       --dry-run     Show the clean target plan without prompting or deleting
       --yes         Delete planned cleanup target without prompting
   -h, --help        Show this help
+  -V, --version     Show package name and version
 "
     .trim_end()
     .to_string()

@@ -9,7 +9,7 @@ use disk_maint::cli::{
 fn main() -> ExitCode {
     let cli = match cli::parse_args(std::env::args()) {
         Ok(cli) => cli,
-        Err(cli::ParseError::Help(message)) => {
+        Err(cli::ParseError::Help(message) | cli::ParseError::Version(message)) => {
             println!("{message}");
             return ExitCode::SUCCESS;
         }
