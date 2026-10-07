@@ -166,10 +166,18 @@ pub fn help_text() -> String {
   disk-maint [--root PATH] clean shared [--yes]
   disk-maint clean tools [--yes]
 
+Commands:
+  scan           Show Rust maintenance and stale tool version reports
+  rust           List Rust projects with local target and source sizes
+  git status     Show working tree changes in repositories (omit clean ones)
+  clean target   Remove repository-local Cargo target directories
+  clean shared   Remove the shared Cargo target directory
+  clean tools    Remove stale Codex and Claude Code versions
+
 Options:
   -r, --root PATH   Repository root to scan (default: ~/labs/repos)
       --dry-run     Show the clean target plan without prompting or deleting
-      --yes         Delete planned cleanup target without prompting
+      --yes         Delete planned cleanup without prompting
   -h, --help        Show this help
   -V, --version     Show package name and version
 "
